@@ -16,6 +16,7 @@ from renderer import draw, trunc_exp, global_culling, world2camera_func
 from tqdm import tqdm
 import argparse
 from pykdtree.kdtree import KDTree
+from plyfile import PlyData, PlyElement
 EPS=1e-4
     
 def world_to_camera(points, rot, tran):
@@ -657,6 +658,8 @@ class Splatter(nn.Module):
 
 class StableSplatter(nn.Module):
     def __init__(self, 
+        load_ckpt=None,
+        load_ply=None,
         near=0.3,
         #near=1.1,
         jacobian_calc="cuda",
@@ -671,12 +674,14 @@ class StableSplatter(nn.Module):
         debug=1,
         scale_activation="abs",
         cudaculling=0,
-        load_ckpt=None,
         debug_align=False,
         fast_drawing=False,
         test=False,
     ):
         super().__init__()
+        assert load_ckpt is not None or load_ply is not None
+
+
         self.device = torch.device("cuda")
         self.use_sh_coeff = use_sh_coeff
         self.near = near
@@ -698,20 +703,64 @@ class StableSplatter(nn.Module):
 
 
         if load_ckpt is not None:
-            # load checkpoint
-            ckpt = torch.load(load_ckpt)
-            self.gaussian_3ds = Gaussian3ds(
-                pos=nn.Parameter(ckpt["pos"]), # B x 3
-                rgb = nn.Parameter(ckpt["rgb"]), # B x 3 or 27
-                opa = nn.Parameter(ckpt["opa"]), # B
-                quat = nn.Parameter(ckpt["quat"]), # B x 4
-                scale = nn.Parameter(ckpt["scale"]),
-                init_values=True,
-            )
+            self.load_from_ckpt(load_ckpt)
+        elif load_ply is not None:
+            self.load_from_ply(load_ply)
         else:
             raise NotImplementedError
 
         self.current_camera = None
+
+
+    def load_from_ckpt(self, path):
+        # load checkpoint
+        ckpt = torch.load(path)
+        self.gaussian_3ds = Gaussian3ds(
+            pos=nn.Parameter(ckpt["pos"]), # B x 3
+            rgb = nn.Parameter(ckpt["rgb"]), # B x 3 or 27
+            opa = nn.Parameter(ckpt["opa"]), # B
+            quat = nn.Parameter(ckpt["quat"]), # B x 4
+            scale = nn.Parameter(ckpt["scale"]),
+            init_values=True,
+        )
+        return
+
+
+    def load_from_ply(self, path):
+        plydata = PlyData.read(path)
+
+        xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
+                        np.asarray(plydata.elements[0]["y"]),
+                        np.asarray(plydata.elements[0]["z"])),  axis=1)
+        opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
+
+        features_dc = np.zeros((xyz.shape[0], 3))
+        features_dc[:, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
+        features_dc[:, 1] = np.asarray(plydata.elements[0]["f_dc_1"])
+        features_dc[:, 2] = np.asarray(plydata.elements[0]["f_dc_2"])
+
+        scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
+        scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
+        scales = np.zeros((xyz.shape[0], len(scale_names)))
+        for idx, attr_name in enumerate(scale_names):
+            scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
+
+        rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
+        rot_names = sorted(rot_names, key = lambda x: int(x.split('_')[-1]))
+        rots = np.zeros((xyz.shape[0], len(rot_names)))
+        for idx, attr_name in enumerate(rot_names):
+            rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
+
+
+        self.gaussian_3ds = Gaussian3ds(
+            pos = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device=self.device)), # B x 3
+            rgb = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device=self.device)), # B x 3 or 27
+            opa = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device=self.device)), # B
+            quat = nn.Parameter(torch.tensor(rots, dtype=torch.float, device=self.device)), # B x 4
+            scale = nn.Parameter(torch.exp(torch.tensor(scales, dtype=torch.float, device=self.device))),
+            init_values=True,
+        )
+        return
     
     def parse_imgs(self):
         img_ids = sorted([im.id for im in self.images_info.values()])
