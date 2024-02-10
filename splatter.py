@@ -654,6 +654,294 @@ class Splatter(nn.Module):
         
         return ret
 
+
+class StableSplatter(nn.Module):
+    def __init__(self, 
+        near=0.3,
+        #near=1.1,
+        jacobian_calc="cuda",
+        render_downsample=1,
+        use_sh_coeff=False,
+        render_weight_normalize=False,
+        opa_init_value=0.1,
+        scale_init_value=0.02,
+        tile_culling_method="dist", # dist or prob
+        tile_culling_dist_thresh=0.5,
+        tile_culling_prob_thresh=0.1,
+        debug=1,
+        scale_activation="abs",
+        cudaculling=0,
+        load_ckpt=None,
+        debug_align=False,
+        fast_drawing=False,
+        test=False,
+    ):
+        super().__init__()
+        self.device = torch.device("cuda")
+        self.use_sh_coeff = use_sh_coeff
+        self.near = near
+        self.jacobian_calc = jacobian_calc
+        self.render_downsample = render_downsample
+        self.render_weight_normalize = render_weight_normalize
+        self.tile_culling_method = tile_culling_method
+        self.tile_culling_dist_thresh = tile_culling_dist_thresh
+        self.tile_culling_prob_thresh = tile_culling_prob_thresh
+        self.debug = debug
+        self.scale_activation = scale_activation
+        self.cudaculling = cudaculling
+        assert jacobian_calc == "cuda" or jacobian_calc == "torch"
+        self.fast_drawing = fast_drawing
+
+        # self.vis_culling = Vis()
+        self.tic = torch.cuda.Event(enable_timing=True)
+        self.toc = torch.cuda.Event(enable_timing=True)
+
+
+        if load_ckpt is not None:
+            # load checkpoint
+            ckpt = torch.load(load_ckpt)
+            self.gaussian_3ds = Gaussian3ds(
+                pos=nn.Parameter(ckpt["pos"]), # B x 3
+                rgb = nn.Parameter(ckpt["rgb"]), # B x 3 or 27
+                opa = nn.Parameter(ckpt["opa"]), # B
+                quat = nn.Parameter(ckpt["quat"]), # B x 4
+                scale = nn.Parameter(ckpt["scale"]),
+                init_values=True,
+            )
+        else:
+            raise NotImplementedError
+
+        self.current_camera = None
+    
+    def parse_imgs(self):
+        img_ids = sorted([im.id for im in self.images_info.values()])
+        self.w2c_quats = []
+        self.w2c_rots = []
+        self.w2c_trans = []
+        self.cam_ids = []
+        self.imgs = []
+        for img_id in tqdm(img_ids):
+            img_info = self.images_info[img_id]
+            cam = self.cameras[img_info.camera_id]
+            image_filename = os.path.join(self.image_path, img_info.name)
+            if not os.path.exists(image_filename):
+                continue
+            _current_image = cv2.imread(image_filename)
+            _current_image = cv2.cvtColor(_current_image, cv2.COLOR_BGR2RGB)
+            self.imgs.append(torch.from_numpy(_current_image).to(torch.uint8).to(self.device))
+
+            T_world_camera = tf.SE3.from_rotation_and_translation(
+                tf.SO3(img_info.qvec), img_info.tvec,
+            )#.inverse()
+            self.w2c_quats.append(torch.from_numpy(T_world_camera.rotation().wxyz).to(torch.float32).to(self.device))
+            self.w2c_trans.append(torch.from_numpy(T_world_camera.translation()).to(torch.float32).to(self.device))
+            self.w2c_rots.append(q2r(self.w2c_quats[-1].unsqueeze(0)).squeeze().to(torch.float32).to(self.device))
+            # print(self.w2c_trans)
+            # print(self.w2c_rots)
+            self.cam_ids.append(img_info.camera_id)
+        
+    def switch_resolution(self, downsample_factor):
+        if downsample_factor == self.render_downsample:
+            return
+        self.image_path = self.image_path.replace(f"images_{self.render_downsample}", f"images_{downsample_factor}")
+        self.render_downsample = downsample_factor
+        self.parse_imgs()
+        self.current_camera = None
+        self.set_camera(0)
+        # print(torch.stack(self.w2c_trans, dim=0).mean(0))
+        # print(torch.stack(self.w2c_rots, dim=0).mean(0))
+
+    def set_camera(self, idx, extrinsics=None, intrinsics=None):
+        if idx is None:
+            # print(extrinsics)
+            self.current_w2c_rot = torch.from_numpy(extrinsics["rot"]).to(torch.float32).to(self.device)
+            self.current_w2c_tran = torch.from_numpy(extrinsics["tran"]).to(torch.float32).to(self.device)
+            self.current_w2c_quat = None
+            self.ground_truth = None
+            self.current_camera = Camera(
+                id=-1, model="pinhole", width=intrinsics["width"], height=intrinsics["height"],
+                params = np.array(
+                    [intrinsics["focal_x"], intrinsics["focal_y"]]
+                ),
+            )
+            self.tile_info = Tiles(
+                math.ceil(intrinsics["width"]), 
+                math.ceil(intrinsics["height"]), 
+                intrinsics["focal_x"], 
+                intrinsics["focal_y"], 
+                self.device
+            )
+            self.tile_info_cpp = self.tile_info.create_tiles()
+        else:
+            with Timer("    set image", debug=self.debug):
+                self.current_w2c_quat = self.w2c_quats[idx]
+                self.current_w2c_tran = self.w2c_trans[idx]
+                self.current_w2c_rot = self.w2c_rots[idx]
+                self.ground_truth = self.imgs[idx].to(torch.float16)/255.
+            with Timer("    set camera", debug=self.debug):
+                if self.cameras[self.cam_ids[idx]] != self.current_camera:
+                    self.current_camera = self.cameras[self.cam_ids[idx]]
+                    width = self.current_camera.width / self.render_downsample
+                    height = self.current_camera.height / self.render_downsample
+                    focal_x = self.current_camera.params[0] / self.render_downsample
+                    focal_y = self.current_camera.params[1] / self.render_downsample
+                    self.tile_info = Tiles(int(self.ground_truth.shape[1]), int(self.ground_truth.shape[0]), focal_x, focal_y, self.device)
+                    self.tile_info_cpp = self.tile_info.create_tiles()
+
+        self.ray_info = RayInfo(
+            w2c=self.current_w2c_rot, 
+            tran=self.current_w2c_tran, 
+            H=self.tile_info.padded_height, 
+            W=self.tile_info.padded_width, 
+            focal_x=self.tile_info.focal_x, 
+            focal_y=self.tile_info.focal_y
+        )
+
+    def project_and_culling(self):
+        # project 3D to 2D
+        # print(f"number of gaussians {len(self.gaussian_3ds.pos)}")
+        # self.tic.record()
+        if self.cudaculling:
+            with Timer(" frustum cuda", debug=self.debug):
+                normed_quat = (self.gaussian_3ds.quat/self.gaussian_3ds.quat.norm(dim=1, keepdim=True))
+                if self.scale_activation == "abs":
+                    normed_scale = self.gaussian_3ds.scale.abs()+EPS
+                else:
+                    assert self.scale_activation == "exp"
+                    normed_scale = trunc_exp(self.gaussian_3ds.scale)
+                _pos, _cov, _culling_mask = global_culling(
+                    self.gaussian_3ds.pos, 
+                    normed_quat,
+                    normed_scale,
+                    self.current_w2c_rot.detach(), 
+                    self.current_w2c_tran.detach(), 
+                    self.near, 
+                    self.current_camera.width*1.2/2/self.current_camera.params[0], 
+                    self.current_camera.height*1.2/2/self.current_camera.params[1],
+                )
+
+                self.culling_gaussian_3d_image_space = Gaussian3ds(
+                    pos=_pos[_culling_mask.bool()],
+                    cov=_cov[_culling_mask.bool()],
+                    rgb=self.gaussian_3ds.rgb[_culling_mask.bool()] if self.use_sh_coeff else self.gaussian_3ds.rgb[_culling_mask.bool()].sigmoid(),
+                    opa=self.gaussian_3ds.opa[_culling_mask.bool()].sigmoid(),
+                )
+                self.culling_mask = _culling_mask
+        else:
+            with Timer("culling 1"):
+                gaussian_3ds_pos_camera_space = world_to_camera(self.gaussian_3ds.pos, self.current_w2c_rot, self.current_w2c_tran)
+            with Timer("culling 2"):
+                valid = gaussian_3ds_pos_camera_space[:,2] > self.near
+                gaussian_3ds_pos_image_space = camera_to_image(gaussian_3ds_pos_camera_space)
+                culling_mask = (gaussian_3ds_pos_image_space[:, 0].abs() < (self.current_camera.width*1.2/2/self.current_camera.params[0]))  & \
+                                (gaussian_3ds_pos_image_space[:, 1].abs() < (self.current_camera.height*1.2/2/self.current_camera.params[1]))
+                valid &= culling_mask
+                self.gaussian_3ds_valid = self.gaussian_3ds.filte(valid)
+            with Timer("cullint 3"):
+                self.culling_gaussian_3d_image_space = self.gaussian_3ds_valid.project(
+                    self.current_w2c_rot, 
+                    self.current_w2c_tran, 
+                    self.near, 
+                    self.jacobian_calc,
+                    scale_activation=self.scale_activation,
+                )
+        
+    def render(self, out_write=True):
+        if len(self.culling_gaussian_3d_image_space.pos) == 0:
+            return torch.zeros(self.tile_info.padded_height, self.tile_info.padded_width, 3, device=self.device, dtype=torch.float32)
+        # self.tic.record()
+        with Timer("     culling tiles", debug=self.debug):
+            tile_n_point = torch.zeros(len(self.tile_info), device=self.device, dtype=torch.int32)
+            # MAXP = len(self.culling_gaussian_3d_image_space.pos)//10
+            MAXP = len(self.culling_gaussian_3d_image_space.pos)//20
+            tile_gaussian_list = torch.ones(len(self.tile_info), MAXP, device=self.device, dtype=torch.int32) * -1
+            _method_config = {"dist": 0, "prob": 1, "prob2": 2}
+            gaussian.calc_tile_list(
+                    self.culling_gaussian_3d_image_space._tocpp(), 
+                    self.tile_info_cpp,
+                    tile_n_point,
+                    tile_gaussian_list,
+                    (self.tile_info.tile_geo_length_x/self.tile_culling_dist_thresh) ** 2 if self.tile_culling_method == "dist" else self.tile_culling_prob_thresh,
+                    _method_config[self.tile_culling_method],
+                    self.tile_info.tile_geo_length_x,
+                    self.tile_info.tile_geo_length_y,
+                    self.tile_info.n_tile_x,
+                    self.tile_info.n_tile_y,
+                    self.tile_info.leftmost,
+                    self.tile_info.topmost,
+            )
+            tile_n_point = torch.min(tile_n_point, torch.ones_like(tile_n_point)*MAXP)
+
+        if tile_n_point.sum() == 0:
+            return torch.zeros(self.tile_info.padded_height, self.tile_info.padded_width, 3, device=self.device, dtype=torch.float32)
+            
+        with Timer("     gather culled tiles", debug=self.debug):
+            gathered_list = torch.empty(tile_n_point.sum(), dtype=torch.int32, device=self.device)
+            tile_ids_for_points = torch.empty(tile_n_point.sum(), dtype=torch.int32, device=self.device)
+            tile_n_point_accum = torch.cat([torch.Tensor([0]).to(self.device), torch.cumsum(tile_n_point, 0)]).to(tile_n_point)
+            max_points_for_tile = tile_n_point.max().item()
+            # print(max_points_for_tile)
+            gaussian.gather_gaussians(
+                tile_n_point_accum,
+                tile_gaussian_list,
+                gathered_list,
+                tile_ids_for_points,
+                int(max_points_for_tile),
+            )
+            self.tile_gaussians = self.culling_gaussian_3d_image_space.filte(gathered_list.long())
+            self.n_tile_gaussians = len(self.tile_gaussians.pos)
+            self.n_gaussians = len(self.gaussian_3ds.pos)
+
+        with Timer("     sorting", debug=self.debug):
+            # cat id and sort
+            BASE = self.tile_gaussians.pos[..., 2].max()
+            id_and_depth = self.tile_gaussians.pos[..., 2].to(torch.float32) + tile_ids_for_points.to(torch.float32) * (BASE+1)
+            _, sort_indices = torch.sort(id_and_depth)
+            self.tile_gaussians = self.tile_gaussians.filte(sort_indices)
+
+        with Timer("     rendering", debug=self.debug):
+            rendered_image = draw(
+                self.tile_gaussians.pos,
+                self.tile_gaussians.rgb,
+                self.tile_gaussians.opa,
+                self.tile_gaussians.cov,
+                tile_n_point_accum,
+                self.tile_info.padded_height,
+                self.tile_info.padded_width,
+                self.tile_info.focal_x,
+                self.tile_info.focal_y,
+                self.render_weight_normalize,
+                False,
+                self.use_sh_coeff,
+                self.fast_drawing,
+                self.ray_info.rays_o,
+                self.ray_info.lefttop,
+                self.ray_info.dx,
+                self.ray_info.dy,
+            ) 
+
+        with Timer("    write out", debug=self.debug):
+            if out_write:
+                img_npy = rendered_image.clip(0,1).detach().cpu().numpy()
+                cv2.imwrite("test.png", (img_npy*255).astype(np.uint8)[...,::-1])
+
+        return rendered_image
+
+    def forward(self, camera_id=None, extrinsics=None, intrinsics=None):
+        with Timer("forward", debug=self.debug):
+            with Timer("set camera", debug=self.debug):
+                self.set_camera(camera_id, extrinsics, intrinsics)
+            with Timer("frustum culling", debug=self.debug):
+                self.project_and_culling()
+            with Timer("render function", debug=self.debug):
+                padded_render_img = self.render(out_write=False)
+            with Timer("crop", debug=self.debug):
+                padded_render_img = torch.clamp(padded_render_img, 0, 1)
+                ret = self.tile_info.crop(padded_render_img)
+        
+        return ret
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--cudaculling", type=int, default=0)
