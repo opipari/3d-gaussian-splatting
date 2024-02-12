@@ -658,6 +658,7 @@ class Splatter(nn.Module):
 
 class StableSplatter(nn.Module):
     def __init__(self, 
+        load_dict=None,
         load_ckpt=None,
         load_ply=None,
         near=0.3,
@@ -666,9 +667,7 @@ class StableSplatter(nn.Module):
         render_downsample=1,
         use_sh_coeff=False,
         render_weight_normalize=False,
-        opa_init_value=0.1,
-        scale_init_value=0.02,
-        tile_culling_method="dist", # dist or prob
+        tile_culling_method="prob", # dist or prob
         tile_culling_dist_thresh=0.5,
         tile_culling_prob_thresh=0.1,
         debug=1,
@@ -679,7 +678,7 @@ class StableSplatter(nn.Module):
         test=False,
     ):
         super().__init__()
-        assert load_ckpt is not None or load_ply is not None
+        assert load_dict is not None or load_ckpt is not None or load_ply is not None
 
 
         self.device = torch.device("cuda")
@@ -701,9 +700,12 @@ class StableSplatter(nn.Module):
         self.tic = torch.cuda.Event(enable_timing=True)
         self.toc = torch.cuda.Event(enable_timing=True)
 
-
-        if load_ckpt is not None:
-            self.load_from_ckpt(load_ckpt)
+        if load_dict is not None:
+            self.load_from_dict(load_dict)
+        elif load_ckpt is not None:
+            # load checkpoint
+            ckpt = torch.load(load_ckpt)
+            self.load_from_dict(ckpt)
         elif load_ply is not None:
             self.load_from_ply(load_ply)
         else:
@@ -712,18 +714,41 @@ class StableSplatter(nn.Module):
         self.current_camera = None
 
 
-    def load_from_ckpt(self, path):
-        # load checkpoint
-        ckpt = torch.load(path)
+    def update_gaussian_3ds(self, pos=None, rgb=None, opa=None, quat=None, scale=None):
+        if pos is not None:
+            self.gaussian_3ds.pos = pos
+        if rgb is not None:
+            self.gaussian_3ds.rgb = rgb
+        if opa is not None:
+            self.gaussian_3ds.opa = opa
+        if quat is not None:
+            self.gaussian_3ds.quat = quat
+        if scale is not None:
+            self.gaussian_3ds.scale = scale
+
+
+    def load_from_dict(self, ckpt, init_values=False):
         self.gaussian_3ds = Gaussian3ds(
-            pos=nn.Parameter(ckpt["pos"]), # B x 3
-            rgb = nn.Parameter(ckpt["rgb"]), # B x 3 or 27
-            opa = nn.Parameter(ckpt["opa"]), # B
-            quat = nn.Parameter(ckpt["quat"]), # B x 4
-            scale = nn.Parameter(ckpt["scale"]),
-            init_values=True,
-        )
+                pos = ckpt["pos"], # B x 3
+                rgb = ckpt["rgb"], # B x 3 or 27
+                opa = ckpt["opa"], # B
+                quat = ckpt["quat"], # B x 4
+                scale = ckpt["scale"],
+                init_values=init_values,
+            )
+        
         return
+
+
+    def save_ckpt(self, path='ckpt.pth'):
+        ckpt = {
+            "pos": self.gaussian_3ds.pos,
+            "opa": self.gaussian_3ds.opa,
+            "rgb": self.gaussian_3ds.rgb,
+            "quat": self.gaussian_3ds.quat,
+            "scale": self.gaussian_3ds.scale,
+        }
+        torch.save(ckpt, path)
 
 
     def load_from_ply(self, path):
@@ -738,6 +763,18 @@ class StableSplatter(nn.Module):
         features_dc[:, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
         features_dc[:, 1] = np.asarray(plydata.elements[0]["f_dc_1"])
         features_dc[:, 2] = np.asarray(plydata.elements[0]["f_dc_2"])
+
+        # extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
+        # extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))
+        # assert len(extra_f_names)==3*(3 + 1) ** 2 - 3
+        # features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
+        # for idx, attr_name in enumerate(extra_f_names):
+        #     features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        # # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
+        # features_extra = features_extra.reshape((features_extra.shape[0], 3, (3 + 1) ** 2 - 1))
+
+        # print(features_extra.shape,len(extra_f_names))
+        # raise
 
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
         scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
@@ -761,81 +798,78 @@ class StableSplatter(nn.Module):
             init_values=True,
         )
         return
-    
-    def parse_imgs(self):
-        img_ids = sorted([im.id for im in self.images_info.values()])
-        self.w2c_quats = []
-        self.w2c_rots = []
-        self.w2c_trans = []
-        self.cam_ids = []
-        self.imgs = []
-        for img_id in tqdm(img_ids):
-            img_info = self.images_info[img_id]
-            cam = self.cameras[img_info.camera_id]
-            image_filename = os.path.join(self.image_path, img_info.name)
-            if not os.path.exists(image_filename):
-                continue
-            _current_image = cv2.imread(image_filename)
-            _current_image = cv2.cvtColor(_current_image, cv2.COLOR_BGR2RGB)
-            self.imgs.append(torch.from_numpy(_current_image).to(torch.uint8).to(self.device))
 
-            T_world_camera = tf.SE3.from_rotation_and_translation(
-                tf.SO3(img_info.qvec), img_info.tvec,
-            )#.inverse()
-            self.w2c_quats.append(torch.from_numpy(T_world_camera.rotation().wxyz).to(torch.float32).to(self.device))
-            self.w2c_trans.append(torch.from_numpy(T_world_camera.translation()).to(torch.float32).to(self.device))
-            self.w2c_rots.append(q2r(self.w2c_quats[-1].unsqueeze(0)).squeeze().to(torch.float32).to(self.device))
-            # print(self.w2c_trans)
-            # print(self.w2c_rots)
-            self.cam_ids.append(img_info.camera_id)
+
+    # def construct_list_of_attributes(self):
+    #     l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
+    #     # All channels except the 3 DC
+    #     for i in range(self.gaussian_3ds.rgb.shape[1]):
+    #         l.append('f_dc_{}'.format(i))
+    #     for i in range(45):
+    #         l.append('f_rest_{}'.format(i))
+    #     l.append('opacity')
+    #     for i in range(self.gaussian_3ds.scale.shape[1]):
+    #         l.append('scale_{}'.format(i))
+    #     for i in range(self.gaussian_3ds.quat.shape[1]):
+    #         l.append('rot_{}'.format(i))
+    #     return l
+
+    # def save_ply(self, path='ckpt.ply'):
+
+    #     xyz = self.gaussian_3ds.pos.detach().cpu().numpy()
+    #     normals = np.zeros_like(xyz)
+    #     f_dc = self.gaussian_3ds.rgb.detach().cpu().numpy()
+    #     f_rest = torch.ones(xyz.shape[0], 45).cpu().numpy()
+    #     opacities = self.gaussian_3ds.opa.detach().cpu().numpy()
+    #     scale = self.gaussian_3ds.scale.detach().cpu().numpy()
+    #     rotation = self.gaussian_3ds.quat.detach().cpu().numpy()
+
+    #     dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
+
+    #     elements = np.empty(xyz.shape[0], dtype=dtype_full)
+    #     attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+    #     elements[:] = list(map(tuple, attributes))
+    #     el = PlyElement.describe(elements, 'vertex')
+    #     PlyData([el]).write(path)
+
+
+    def get_falttened_properties_for_training(self, num_splats):
+        '''
+        flatten all the feature and return it as a 1D vector
+        '''
         
-    def switch_resolution(self, downsample_factor):
-        if downsample_factor == self.render_downsample:
-            return
-        self.image_path = self.image_path.replace(f"images_{self.render_downsample}", f"images_{downsample_factor}")
-        self.render_downsample = downsample_factor
-        self.parse_imgs()
-        self.current_camera = None
-        self.set_camera(0)
-        # print(torch.stack(self.w2c_trans, dim=0).mean(0))
-        # print(torch.stack(self.w2c_rots, dim=0).mean(0))
-
-    def set_camera(self, idx, extrinsics=None, intrinsics=None):
-        if idx is None:
-            # print(extrinsics)
-            self.current_w2c_rot = torch.from_numpy(extrinsics["rot"]).to(torch.float32).to(self.device)
-            self.current_w2c_tran = torch.from_numpy(extrinsics["tran"]).to(torch.float32).to(self.device)
-            self.current_w2c_quat = None
-            self.ground_truth = None
-            self.current_camera = Camera(
-                id=-1, model="pinhole", width=intrinsics["width"], height=intrinsics["height"],
-                params = np.array(
-                    [intrinsics["focal_x"], intrinsics["focal_y"]]
-                ),
+        return ( torch.concat(
+                (self.gaussian_3ds.pos[:num_splats].T.flatten(0), # [size, 3]
+                self.gaussian_3ds.rgb[:num_splats].T.flatten(0), # [size, 3]
+                self.gaussian_3ds.scale[:num_splats].T.flatten(0), # [size, 3]
+                self.gaussian_3ds.quat[:num_splats].T.flatten(0), # [size, 4]
+                self.gaussian_3ds.opa[:num_splats].T.flatten(0) # [size, 1]
+                ), 
+                dim=0
             )
-            self.tile_info = Tiles(
-                math.ceil(intrinsics["width"]), 
-                math.ceil(intrinsics["height"]), 
-                intrinsics["focal_x"], 
-                intrinsics["focal_y"], 
-                self.device
-            )
-            self.tile_info_cpp = self.tile_info.create_tiles()
-        else:
-            with Timer("    set image", debug=self.debug):
-                self.current_w2c_quat = self.w2c_quats[idx]
-                self.current_w2c_tran = self.w2c_trans[idx]
-                self.current_w2c_rot = self.w2c_rots[idx]
-                self.ground_truth = self.imgs[idx].to(torch.float16)/255.
-            with Timer("    set camera", debug=self.debug):
-                if self.cameras[self.cam_ids[idx]] != self.current_camera:
-                    self.current_camera = self.cameras[self.cam_ids[idx]]
-                    width = self.current_camera.width / self.render_downsample
-                    height = self.current_camera.height / self.render_downsample
-                    focal_x = self.current_camera.params[0] / self.render_downsample
-                    focal_y = self.current_camera.params[1] / self.render_downsample
-                    self.tile_info = Tiles(int(self.ground_truth.shape[1]), int(self.ground_truth.shape[0]), focal_x, focal_y, self.device)
-                    self.tile_info_cpp = self.tile_info.create_tiles()
+        )
+        
+    def set_camera(self, extrinsics=None, intrinsics=None):
+        
+        # print(extrinsics)
+        self.current_w2c_rot = torch.from_numpy(extrinsics["rot"]).to(torch.float32).to(self.device)
+        self.current_w2c_tran = torch.from_numpy(extrinsics["tran"]).to(torch.float32).to(self.device)
+        self.current_w2c_quat = None
+        self.ground_truth = None
+        self.current_camera = Camera(
+            id=-1, model="pinhole", width=intrinsics["width"], height=intrinsics["height"],
+            params = np.array(
+                [intrinsics["focal_x"], intrinsics["focal_y"]]
+            ),
+        )
+        self.tile_info = Tiles(
+            math.ceil(intrinsics["width"]), 
+            math.ceil(intrinsics["height"]), 
+            intrinsics["focal_x"], 
+            intrinsics["focal_y"], 
+            self.device
+        )
+        self.tile_info_cpp = self.tile_info.create_tiles()
 
         self.ray_info = RayInfo(
             w2c=self.current_w2c_rot, 
@@ -976,10 +1010,10 @@ class StableSplatter(nn.Module):
 
         return rendered_image
 
-    def forward(self, camera_id=None, extrinsics=None, intrinsics=None):
+    def forward(self, extrinsics=None, intrinsics=None):
         with Timer("forward", debug=self.debug):
             with Timer("set camera", debug=self.debug):
-                self.set_camera(camera_id, extrinsics, intrinsics)
+                self.set_camera(extrinsics, intrinsics)
             with Timer("frustum culling", debug=self.debug):
                 self.project_and_culling()
             with Timer("render function", debug=self.debug):
@@ -989,6 +1023,9 @@ class StableSplatter(nn.Module):
                 ret = self.tile_info.crop(padded_render_img)
         
         return ret
+
+
+
 
 
 if __name__ == "__main__":

@@ -48,6 +48,17 @@ class ViserViewer:
         )
 
         self.pause_training_button = self.server.add_gui_button("Pause Training")
+        self.server.add_frame(
+            "/origin",
+            wxyz=(1.0, 0.0, 0.0, 0.0),
+            position=(0, 0, 0),
+        )
+        self.server.add_frame(
+            "/other",
+            wxyz=(-0.22699525,  0.39316731, -0.77163428,  0.44550326),
+            position=(-0.70062927,  0.50903696,  0.5),
+        )
+
         self.sh_order = self.server.add_gui_slider(
             "SH Order", min=1, max=4, step=1, initial_value=1
         )
@@ -98,6 +109,8 @@ class ViserViewer:
                 client.camera.up_direction = tf.SO3(client.camera.wxyz) @ np.array(
                     [0.0, -1.0, 0.0]
                 )
+                client.camera.wxyz = (1,0,0,0)
+                client.camera.position = (0,0,0)
 
         self.c2ws = []
         self.camera_infos = []
@@ -129,7 +142,7 @@ class ViserViewer:
                     H = int(self.resolution_slider.value/camera.aspect)
                     focal_x = W/2/np.tan(camera.fov/2)
                     focal_y = H/2/np.tan(camera.fov/2)
-
+                    print(focal_x, focal_y)
                     start_cuda = torch.cuda.Event(enable_timing=True)
                     end_cuda = torch.cuda.Event(enable_timing=True)
                     start_cuda.record()
