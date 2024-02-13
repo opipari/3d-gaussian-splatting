@@ -661,6 +661,7 @@ class StableSplatter(nn.Module):
         load_dict=None,
         load_ckpt=None,
         load_ply=None,
+        load_network_output=None,
         near=0.3,
         #near=1.1,
         jacobian_calc="cuda",
@@ -678,7 +679,7 @@ class StableSplatter(nn.Module):
         test=False,
     ):
         super().__init__()
-        assert load_dict is not None or load_ckpt is not None or load_ply is not None
+        assert load_dict is not None or load_ckpt is not None or load_ply is not None or load_network_output is not None
 
 
         self.device = torch.device("cuda")
@@ -708,6 +709,8 @@ class StableSplatter(nn.Module):
             self.load_from_dict(ckpt)
         elif load_ply is not None:
             self.load_from_ply(load_ply)
+        elif load_network_output is not None:
+            self.load_network_output(load_network_output)
         else:
             raise NotImplementedError
 
@@ -799,39 +802,56 @@ class StableSplatter(nn.Module):
         )
         return
 
+    def construct_list_of_attributes(self):
+        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
+        # All channels except the 3 DC
+        for i in range(self.gaussian_3ds.rgb.shape[1]):
+            l.append('f_dc_{}'.format(i))
+        for i in range(45):
+            l.append('f_rest_{}'.format(i))
+        l.append('opacity')
+        for i in range(self.gaussian_3ds.scale.shape[1]):
+            l.append('scale_{}'.format(i))
+        for i in range(self.gaussian_3ds.quat.shape[1]):
+            l.append('rot_{}'.format(i))
+        return l
 
-    # def construct_list_of_attributes(self):
-    #     l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
-    #     # All channels except the 3 DC
-    #     for i in range(self.gaussian_3ds.rgb.shape[1]):
-    #         l.append('f_dc_{}'.format(i))
-    #     for i in range(45):
-    #         l.append('f_rest_{}'.format(i))
-    #     l.append('opacity')
-    #     for i in range(self.gaussian_3ds.scale.shape[1]):
-    #         l.append('scale_{}'.format(i))
-    #     for i in range(self.gaussian_3ds.quat.shape[1]):
-    #         l.append('rot_{}'.format(i))
-    #     return l
+    def save_ply(self, path='ckpt.ply'):
 
-    # def save_ply(self, path='ckpt.ply'):
+        xyz = self.gaussian_3ds.pos.detach().cpu().numpy()
+        normals = np.zeros_like(xyz)
+        f_dc = self.gaussian_3ds.rgb.detach().cpu().numpy()
+        f_rest = torch.ones(xyz.shape[0], 45).cpu().numpy()
+        opacities = self.gaussian_3ds.opa.detach().cpu().numpy()
+        # sotred in normal space but ply soted in log space
+        scale = torch.log(self.gaussian_3ds.scale.detach()).cpu().numpy()
+        rotation = self.gaussian_3ds.quat.detach().cpu().numpy()
 
-    #     xyz = self.gaussian_3ds.pos.detach().cpu().numpy()
-    #     normals = np.zeros_like(xyz)
-    #     f_dc = self.gaussian_3ds.rgb.detach().cpu().numpy()
-    #     f_rest = torch.ones(xyz.shape[0], 45).cpu().numpy()
-    #     opacities = self.gaussian_3ds.opa.detach().cpu().numpy()
-    #     scale = self.gaussian_3ds.scale.detach().cpu().numpy()
-    #     rotation = self.gaussian_3ds.quat.detach().cpu().numpy()
+        dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 
-    #     dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
-
-    #     elements = np.empty(xyz.shape[0], dtype=dtype_full)
-    #     attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
-    #     elements[:] = list(map(tuple, attributes))
-    #     el = PlyElement.describe(elements, 'vertex')
-    #     PlyData([el]).write(path)
-
+        elements = np.empty(xyz.shape[0], dtype=dtype_full)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+        elements[:] = list(map(tuple, attributes))
+        el = PlyElement.describe(elements, 'vertex')
+        PlyData([el]).write(path)
+    
+    def load_network_output(self, nn_output):
+        '''
+        construct a gaussian model using the output from the neural network
+        input: nn_output tensor, flatten featues with format [xyz, dc, s, r, a]
+        '''
+        unflattened = nn_output.reshape(14, -1)
+        
+        self.gaussian_3ds = Gaussian3ds(
+            pos = nn.Parameter(unflattened[0:3].T).to(self.device),
+            rgb = nn.Parameter(unflattened[3:6].T).to(self.device),
+            # TODO: need to figure out what is features_rest
+            # self._features_rest = nn.Parameter(torch.zeros(unflattened.shape[1],15,3).contiguous()).to(nn_output.device)
+            scale = nn.Parameter(unflattened[6:9].T).to(self.device),
+            quat= nn.Parameter(unflattened[9:13].T).to(self.device),
+            opa = nn.Parameter(unflattened[13].reshape(-1,1)).to(self.device),
+            init_values=True
+        )
 
     def get_falttened_properties_for_training(self, num_splats):
         '''
