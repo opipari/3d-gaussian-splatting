@@ -853,10 +853,13 @@ class StableSplatter(nn.Module):
             init_values=True
         )
 
-    def get_falttened_properties_for_training(self, num_splats):
+    def get_falttened_properties_for_training(self, num_splats = None):
         '''
         flatten all the feature and return it as a 1D vector
         '''
+        if num_splats is None:
+            # default flatten all features
+            num_splats = self.gaussian_3ds.pos.shape[0]
         
         return ( torch.concat(
                 (self.gaussian_3ds.pos[:num_splats].T.flatten(0), # [size, 3]
