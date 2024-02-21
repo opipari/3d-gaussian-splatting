@@ -315,6 +315,18 @@ def qvec2rotmat(qvec):
         ]
     )
 
+def quat_multiply(quaternion0, quaternion1):
+    # batch quat multiply, quat B x 4
+    r0, r1, r2, r3 = torch.split(quaternion0, 1, dim=-1)
+    s0, s1, s2, s3= torch.split(quaternion1, 1, dim=-1)
+    return torch.cat(
+        (r0*s0 - r1*s1 - r2*s2 - r3*s3,
+         r0*s1 + r1*s0 - r2*s3 + r3*s2,
+         r0*s2 + r1*s3 + r2*s0 - r3*s1,
+         r0*s3 - r1*s2 + r2*s1 + r3*s0),
+        axis=-1)
+
+
 def q2r(qvec):
     # qvec B x 4
     qvec = qvec / qvec.norm(dim=1, keepdim=True)

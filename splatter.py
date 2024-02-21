@@ -3,7 +3,7 @@ import math
 import torch
 import torch.nn as nn
 import gaussian
-from utils import read_points3d_binary, read_cameras_binary, read_images_binary, q2r, jacobian_torch, initialize_sh, inverse_sigmoid, inverse_sigmoid_torch, Timer, sample_two_point, Camera
+from utils import read_points3d_binary, read_cameras_binary, read_images_binary, q2r, jacobian_torch, initialize_sh, inverse_sigmoid, inverse_sigmoid_torch, Timer, sample_two_point, Camera, quat_multiply
 from dataclasses import dataclass, field
 import transforms as tf
 import time
@@ -821,7 +821,7 @@ class StableSplatter(nn.Module):
         xyz = self.gaussian_3ds.pos.detach().cpu().numpy()
         normals = np.zeros_like(xyz)
         f_dc = self.gaussian_3ds.rgb.detach().cpu().numpy()
-        f_rest = torch.ones(xyz.shape[0], 45).cpu().numpy()
+        f_rest = torch.zeros(xyz.shape[0], 45).cpu().numpy()
         opacities = self.gaussian_3ds.opa.detach().cpu().numpy()
         # sotred in normal space but ply soted in log space
         scale = torch.log(self.gaussian_3ds.scale.detach()).cpu().numpy()
@@ -871,6 +871,23 @@ class StableSplatter(nn.Module):
                 dim=0
             )
         )
+    
+    def rotate_splat(self, unit_quat):
+        '''
+        input: unit_quat (4,) torch.tensor of random quaternion
+        '''
+        unit_quat = unit_quat.to(self.device)
+        t_to_0 = torch.mean(self.gaussian_3ds.pos, dim=0).reshape(-1,3)
+        center_pos = self.gaussian_3ds.pos - t_to_0
+        R = q2r(unit_quat.unsqueeze(0)) # B x 3 x 3, B = 1 here
+        rotated_pos = torch.matmul(R[0], center_pos.T).T # n x 3 new pos
+        rotated_pos = rotated_pos + t_to_0 # give back the center offset
+        rotated_quat = quat_multiply(self.gaussian_3ds.quat, unit_quat)
+
+        # update the splat
+        self.gaussian_3ds.pos = nn.Parameter(rotated_pos).to(self.device)
+        self.gaussian_3ds.quat = nn.Parameter(rotated_quat).to(self.device)
+        
         
     def set_camera(self, extrinsics=None, intrinsics=None):
         
