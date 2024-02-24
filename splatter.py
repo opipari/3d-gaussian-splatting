@@ -885,8 +885,8 @@ class StableSplatter(nn.Module):
         rotated_quat = quat_multiply(self.gaussian_3ds.quat, unit_quat)
 
         # update the splat
-        self.gaussian_3ds.pos = nn.Parameter(rotated_pos).to(self.device)
-        self.gaussian_3ds.quat = nn.Parameter(rotated_quat).to(self.device)
+        self.gaussian_3ds.pos = rotated_pos.to(self.device)
+        self.gaussian_3ds.quat = rotated_quat.to(self.device)
         
         
     def set_camera(self, extrinsics=None, intrinsics=None):
