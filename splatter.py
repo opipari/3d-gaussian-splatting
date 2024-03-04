@@ -662,6 +662,7 @@ class StableSplatter(nn.Module):
         load_ckpt=None,
         load_ply=None,
         load_network_output=None,
+        load_tensor=None,
         near=0.3,
         #near=1.1,
         jacobian_calc="cuda",
@@ -679,7 +680,7 @@ class StableSplatter(nn.Module):
         test=False,
     ):
         super().__init__()
-        assert load_dict is not None or load_ckpt is not None or load_ply is not None or load_network_output is not None
+        assert load_dict is not None or load_ckpt is not None or load_ply is not None or load_network_output is not None or load_tensor is not None
 
 
         self.device = torch.device("cuda")
@@ -711,6 +712,8 @@ class StableSplatter(nn.Module):
             self.load_from_ply(load_ply)
         elif load_network_output is not None:
             self.load_network_output(load_network_output)
+        elif load_tensor is not None:
+            self.load_from_tensor(load_tensor)
         else:
             raise NotImplementedError
 
@@ -728,15 +731,33 @@ class StableSplatter(nn.Module):
             self.gaussian_3ds.quat = quat
         if scale is not None:
             self.gaussian_3ds.scale = scale
+    
+    def load_from_tensor(self, tensor : torch.Tensor, init_values=False):
+        '''
+        Given tensor [N, 14]
+        0:3 = xyz 
+        3:6 = rgb
+        6:9 = scale
+        9:13 = quaternion
+        13 = opacity
+        '''
+        self.gaussian_3ds = Gaussian3ds(
+                pos = tensor[:,0:3], # B x 3
+                rgb = tensor[:,3:6], # B x 3 or 27
+                scale = tensor[:,6:9], # B x 3
+                quat = tensor[:,9:13], # B x 4
+                opa = tensor[:,13].unsqueeze(1), # B x 1
+                init_values=init_values,
+            )
 
 
     def load_from_dict(self, ckpt, init_values=False):
         self.gaussian_3ds = Gaussian3ds(
                 pos = ckpt["pos"], # B x 3
                 rgb = ckpt["rgb"], # B x 3 or 27
-                opa = ckpt["opa"], # B
-                quat = ckpt["quat"], # B x 4
                 scale = ckpt["scale"],
+                quat = ckpt["quat"], # B x 4
+                opa = ckpt["opa"], # B
                 init_values=init_values,
             )
         
@@ -746,10 +767,10 @@ class StableSplatter(nn.Module):
     def save_ckpt(self, path='ckpt.pth'):
         ckpt = {
             "pos": self.gaussian_3ds.pos,
-            "opa": self.gaussian_3ds.opa,
             "rgb": self.gaussian_3ds.rgb,
-            "quat": self.gaussian_3ds.quat,
             "scale": self.gaussian_3ds.scale,
+            "quat": self.gaussian_3ds.quat,
+            "opa": self.gaussian_3ds.opa,
         }
         torch.save(ckpt, path)
 
@@ -792,12 +813,21 @@ class StableSplatter(nn.Module):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
 
+        # self.gaussian_3ds = Gaussian3ds(
+        #     pos = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device=self.device)), # B x 3
+        #     rgb = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device=self.device)), # B x 3 or 27
+        #     opa = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device=self.device)), # B
+        #     quat = nn.Parameter(torch.tensor(rots, dtype=torch.float, device=self.device)), # B x 4
+        #     scale = nn.Parameter(torch.exp(torch.tensor(scales, dtype=torch.float, device=self.device))),
+        #     init_values=True,
+        # )
+        
         self.gaussian_3ds = Gaussian3ds(
-            pos = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device=self.device)), # B x 3
-            rgb = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device=self.device)), # B x 3 or 27
-            opa = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device=self.device)), # B
-            quat = nn.Parameter(torch.tensor(rots, dtype=torch.float, device=self.device)), # B x 4
-            scale = nn.Parameter(torch.exp(torch.tensor(scales, dtype=torch.float, device=self.device))),
+            pos = torch.tensor(xyz, dtype=torch.float, device=self.device), # B x 3
+            rgb = torch.tensor(features_dc, dtype=torch.float, device=self.device), # B x 3 or 27
+            opa = torch.tensor(opacities, dtype=torch.float, device=self.device), # B x 1
+            quat = torch.tensor(rots, dtype=torch.float, device=self.device), # B x 4
+            scale = torch.exp(torch.tensor(scales, dtype=torch.float, device=self.device)), # B x 3
             init_values=True,
         )
         return
@@ -842,16 +872,43 @@ class StableSplatter(nn.Module):
         '''
         unflattened = nn_output.reshape(14, -1)
         
+        # self.gaussian_3ds = Gaussian3ds(
+        #     pos = nn.Parameter(unflattened[0:3].T).to(self.device),
+        #     rgb = nn.Parameter(unflattened[3:6].T).to(self.device),
+        #     # TODO: need to figure out what is features_rest
+        #     # self._features_rest = nn.Parameter(torch.zeros(unflattened.shape[1],15,3).contiguous()).to(nn_output.device)
+        #     scale = nn.Parameter(unflattened[6:9].T).to(self.device),
+        #     quat= nn.Parameter(unflattened[9:13].T).to(self.device),
+        #     opa = nn.Parameter(unflattened[13].reshape(-1,1)).to(self.device),
+        #     init_values=True
+        # )
+        
         self.gaussian_3ds = Gaussian3ds(
-            pos = nn.Parameter(unflattened[0:3].T).to(self.device),
-            rgb = nn.Parameter(unflattened[3:6].T).to(self.device),
+            pos = unflattened[0:3].T.to(self.device),
+            rgb = unflattened[3:6].T.to(self.device),
             # TODO: need to figure out what is features_rest
             # self._features_rest = nn.Parameter(torch.zeros(unflattened.shape[1],15,3).contiguous()).to(nn_output.device)
-            scale = nn.Parameter(unflattened[6:9].T).to(self.device),
-            quat= nn.Parameter(unflattened[9:13].T).to(self.device),
-            opa = nn.Parameter(unflattened[13].reshape(-1,1)).to(self.device),
+            scale = unflattened[6:9].T.to(self.device),
+            quat= unflattened[9:13].T.to(self.device),
+            opa = unflattened[13].reshape(-1,1).to(self.device),
             init_values=True
         )
+        
+    def get_splat_parameters(self) -> torch.tensor:
+        '''
+        Return a tensor of (N,14)
+        0:3 = xyz 
+        3:6 = rgb
+        6:9 = scale
+        9:13 = quaternion
+        13 = opacity
+        '''
+        return torch.concat((
+            self.gaussian_3ds.pos,
+            self.gaussian_3ds.rgb,
+            self.gaussian_3ds.scale,
+            self.gaussian_3ds.quat,
+            self.gaussian_3ds.opa),dim=1)
 
     def get_falttened_properties_for_training(self, num_splats = None):
         '''
@@ -871,6 +928,7 @@ class StableSplatter(nn.Module):
                 dim=0
             )
         )
+    
     
     def rotate_splat(self, unit_quat):
         '''
@@ -1065,25 +1123,28 @@ class StableSplatter(nn.Module):
         return ret
 
 
-
-
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cudaculling", type=int, default=0)
-    opt = parser.parse_args()
-    test = Splatter(
-        os.path.join("colmap_garden/sparse/0/"), 
-        "colmap_garden/images_4/", 
-        render_weight_normalize=False, 
-        jacobian_calc="cuda", 
-        render_downsample=4, 
-        opa_init_value=0.8, 
-        scale_init_value=0.2,
-        cudaculling=opt.cudaculling,
-        load_ckpt="ckpt.pth",
-        scale_activation="exp",
-    )
-    test.forward(camera_id=0)
-    loss = (test.ground_truth - test.forward(camera_id=0)).abs().mean()
-    loss.backward()
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument("--cudaculling", type=int, default=0)
+    # opt = parser.parse_args()
+    # test = Splatter(
+    #     os.path.join("colmap_garden/sparse/0/"), 
+    #     "colmap_garden/images_4/", 
+    #     render_weight_normalize=False, 
+    #     jacobian_calc="cuda", 
+    #     render_downsample=4, 
+    #     opa_init_value=0.8, 
+    #     scale_init_value=0.2,
+    #     cudaculling=opt.cudaculling,
+    #     load_ckpt="ckpt.pth",
+    #     scale_activation="exp",
+    # )
+    # test.forward(camera_id=0)
+    # loss = (test.ground_truth - test.forward(camera_id=0)).abs().mean()
+    # loss.backward()
+    
+    random_params = torch.randn(1000, 14)
+    splat = StableSplatter(load_tensor=random_params)
+    from_splat = splat.get_splat_parameters()
+    
+    print(random_params == from_splat)
