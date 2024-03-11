@@ -99,7 +99,7 @@ class Gaussian3ds(nn.Module):
     
     # Deprecated, now fused to CUDA kernel in gaussian.global culling
     def get_gaussian_3d_cov(self, scale_activation="abs"):
-        R = q2r(self.quat)
+        R = q2r(self.quat) # this function is doing normalization for the quaternion
         if scale_activation == "abs":
             _scale = self.scale.abs()+EPS
         elif scale_activation == "exp":
@@ -118,6 +118,9 @@ class Gaussian3ds(nn.Module):
         # return self.cov + 1e-2*torch.eye(2).unsqueeze(dim=0).to(self.cov)
     
     def reset_opa(self):
+        '''
+        Poved that opacity are stored in inverse_sigmoid space
+        '''
         torch.nn.init.uniform_(self.opa, a=inverse_sigmoid(0.01), b=inverse_sigmoid(0.01))
     
     def adaptive_control(
@@ -657,6 +660,22 @@ class Splatter(nn.Module):
 
 
 class StableSplatter(nn.Module):
+    '''
+    intended format 
+        xyz: real number space 
+        rgb: 0 ~ 1 ?? (TODO: don't know what's the correct storage format yet)
+        scale: 0 ~ 1
+        quat: normalized
+        opacity: 0 ~ 1
+
+    storage format
+        xyz: real number space 
+        rgb: real number space space (activation: unkonw, seems to be related to spherical harmonics)
+        scale: positive number space (activation exp)
+        quat: unnormalized real number space (activation: normalzie)
+        opacity: inverse-sigmoid space (orignal 0 ~ 1) (activation: sigmoid)
+
+    '''
     def __init__(self, 
         load_dict=None,
         load_ckpt=None,
@@ -678,6 +697,7 @@ class StableSplatter(nn.Module):
         debug_align=False,
         fast_drawing=False,
         test=False,
+        init_values=False,
     ):
         super().__init__()
         assert load_dict is not None or load_ckpt is not None or load_ply is not None or load_network_output is not None or load_tensor is not None
@@ -698,6 +718,11 @@ class StableSplatter(nn.Module):
         assert jacobian_calc == "cuda" or jacobian_calc == "torch"
         self.fast_drawing = fast_drawing
 
+        # some activation 
+        # scale activation is usually exp
+        # self.quat_activation = torch.nn.functional.normalize
+        # self.opa_activation = torch.nn.functional.sigmoid
+
         # self.vis_culling = Vis()
         self.tic = torch.cuda.Event(enable_timing=True)
         self.toc = torch.cuda.Event(enable_timing=True)
@@ -713,7 +738,7 @@ class StableSplatter(nn.Module):
         elif load_network_output is not None:
             self.load_network_output(load_network_output)
         elif load_tensor is not None:
-            self.load_from_tensor(load_tensor)
+            self.load_from_tensor(load_tensor, init_values)
         else:
             raise NotImplementedError
 
@@ -775,7 +800,7 @@ class StableSplatter(nn.Module):
         torch.save(ckpt, path)
 
 
-    def load_from_ply(self, path):
+    def load_from_ply(self, path, init_values=False):
         plydata = PlyData.read(path)
 
         xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
@@ -811,16 +836,6 @@ class StableSplatter(nn.Module):
         rots = np.zeros((xyz.shape[0], len(rot_names)))
         for idx, attr_name in enumerate(rot_names):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
-
-
-        # self.gaussian_3ds = Gaussian3ds(
-        #     pos = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device=self.device)), # B x 3
-        #     rgb = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device=self.device)), # B x 3 or 27
-        #     opa = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device=self.device)), # B
-        #     quat = nn.Parameter(torch.tensor(rots, dtype=torch.float, device=self.device)), # B x 4
-        #     scale = nn.Parameter(torch.exp(torch.tensor(scales, dtype=torch.float, device=self.device))),
-        #     init_values=True,
-        # )
         
         self.gaussian_3ds = Gaussian3ds(
             pos = torch.tensor(xyz, dtype=torch.float, device=self.device), # B x 3
@@ -828,7 +843,7 @@ class StableSplatter(nn.Module):
             opa = torch.tensor(opacities, dtype=torch.float, device=self.device), # B x 1
             quat = torch.tensor(rots, dtype=torch.float, device=self.device), # B x 4
             scale = torch.exp(torch.tensor(scales, dtype=torch.float, device=self.device)), # B x 3
-            init_values=True,
+            init_values=init_values,
         )
         return
 
