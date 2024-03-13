@@ -953,9 +953,11 @@ class StableSplatter(nn.Module):
         t_to_0 = torch.mean(self.gaussian_3ds.pos, dim=0).reshape(-1,3)
         center_pos = self.gaussian_3ds.pos - t_to_0
         R = q2r(unit_quat.unsqueeze(0)) # B x 3 x 3, B = 1 here
-        rotated_pos = torch.matmul(R[0], center_pos.T).T # n x 3 new pos
+        rotated_pos = torch.matmul(R[0], center_pos[...,None]).squeeze(-1) # n x 3 new pos
+        # print(rotated_pos.shape)
         rotated_pos = rotated_pos + t_to_0 # give back the center offset
-        rotated_quat = quat_multiply(self.gaussian_3ds.quat, unit_quat)
+        normalized_quat = self.gaussian_3ds.quat / torch.norm(self.gaussian_3ds.quat, dim=-1, keepdim=True)
+        rotated_quat = quat_multiply(normalized_quat, unit_quat)
 
         # update the splat
         self.gaussian_3ds.pos = rotated_pos.to(self.device)
