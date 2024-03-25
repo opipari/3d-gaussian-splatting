@@ -342,6 +342,7 @@ class Splatter(nn.Module):
         image_path,
         near=0.3,
         #near=1.1,
+        background_color=[1,1,1],
         jacobian_calc="cuda",
         render_downsample=1,
         use_sh_coeff=False,
@@ -361,6 +362,7 @@ class Splatter(nn.Module):
     ):
         super().__init__()
         self.device = torch.device("cuda")
+        self.background_color = torch.tensor(background_color, device=self.device, dtype=torch.float32).clamp(min=0, max=1.0)
         self.use_sh_coeff = use_sh_coeff
         self.near = near
         self.jacobian_calc = jacobian_calc
@@ -634,6 +636,7 @@ class Splatter(nn.Module):
                 self.tile_gaussians.rgb,
                 self.tile_gaussians.opa,
                 self.tile_gaussians.cov,
+                self.background_color,
                 tile_n_point_accum,
                 self.tile_info.padded_height,
                 self.tile_info.padded_width,
@@ -696,6 +699,7 @@ class StableSplatter(nn.Module):
         load_tensor=None,
         near=0.3,
         #near=1.1,
+        background_color=[0.,0.,0.],
         jacobian_calc="cuda",
         render_downsample=1,
         use_sh_coeff=False,
@@ -716,6 +720,7 @@ class StableSplatter(nn.Module):
 
 
         self.device = torch.device("cuda")
+        self.background_color = torch.tensor(background_color, device=self.device, dtype=torch.float32).clamp(min=0, max=1.0)
         self.use_sh_coeff = use_sh_coeff
         self.near = near
         self.jacobian_calc = jacobian_calc
@@ -1115,6 +1120,7 @@ class StableSplatter(nn.Module):
                 self.tile_gaussians.rgb,
                 self.tile_gaussians.opa,
                 self.tile_gaussians.cov,
+                self.background_color,
                 tile_n_point_accum,
                 self.tile_info.padded_height,
                 self.tile_info.padded_width,

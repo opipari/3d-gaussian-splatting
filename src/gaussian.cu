@@ -8,7 +8,7 @@ void culling(torch::Tensor pos, torch::Tensor rgb, torch::Tensor quatenions, tor
 }
 
 __global__ void jacobian_kernel(
-    const float* pos_camera_space, 
+    const float* pos_camera_space,
     float* jacobian,
     uint32_t B
 ){
@@ -32,7 +32,7 @@ __global__ void jacobian_kernel(
     _res[7] = _rsqr * u1;
     _res[8] = _rsqr * u2;
 
-    #pragma unroll 
+    #pragma unroll
     for(uint32_t i=0; i<9; ++i){
         jacobian[i] = _res[i];
     }
@@ -101,8 +101,8 @@ void world2camera_backward(torch::Tensor grad_out, torch::Tensor rot, torch::Ten
 __global__ void calc_tile_info_kernel(
     float * gaussian_pos,
     float * top,
-    float * bottom, 
-    float * left, 
+    float * bottom,
+    float * left,
     float * right,
     int * tile_n_point,
     int * tile_gaussian_list,
@@ -139,8 +139,8 @@ __global__ void calc_tile_info_kernel2(
     float * gaussian_pos,
     float * gaussian_cov,
     float * top,
-    float * bottom, 
-    float * left, 
+    float * bottom,
+    float * left,
     float * right,
     int * tile_n_point,
     int * tile_gaussian_list,
@@ -240,7 +240,7 @@ __global__ void calc_tile_info_kernel3(
 
     for(uint32_t i_top=fmaxf((bbx_top-topmost)/tile_length_y, 0); i_top<(uint32_t)((bbx_bottom-topmost)/tile_length_y+1) && i_top<n_tiles_y; ++i_top){
         for(uint32_t i_left=fmaxf((bbx_left-leftmost)/tile_length_x, 0); i_left<(uint32_t)((bbx_right-leftmost)/tile_length_x+1) && i_left<n_tiles_x; ++i_left){
-            uint32_t tid = i_left + i_top * n_tiles_x; 
+            uint32_t tid = i_left + i_top * n_tiles_x;
             if(tile_n_point[tid]<max_points_per_tile){
                 uint32_t old = atomicAdd(tile_n_point + tid, 1);
                 tile_gaussian_list[max_points_per_tile * tid + old] = pid;
@@ -279,34 +279,34 @@ void calc_tile_list(
         dim3 gridsize(gridsize_x, gridsize_y, 1);
         dim3 blocksize(32, 32, 1);
         calc_tile_info_kernel<<<gridsize, blocksize>>>(
-            gaussians_image_space.pos.data_ptr<float>(), 
-            tile_info.top.data_ptr<float>(), 
-            tile_info.bottom.data_ptr<float>(), 
-            tile_info.left.data_ptr<float>(), 
-            tile_info.right.data_ptr<float>(), 
+            gaussians_image_space.pos.data_ptr<float>(),
+            tile_info.top.data_ptr<float>(),
+            tile_info.bottom.data_ptr<float>(),
+            tile_info.left.data_ptr<float>(),
+            tile_info.right.data_ptr<float>(),
             tile_n_point.data_ptr<int>(),
             tile_gaussian_list.data_ptr<int>(),
-            n_point, 
+            n_point,
             n_tiles,
             max_points_per_tile,
             thresh
         );
-    } 
+    }
     else if(method == 1){
         uint32_t gridsize_x = DIV_ROUND_UP(n_point, 32);
         uint32_t gridsize_y = DIV_ROUND_UP(n_tiles, 32);
         dim3 gridsize(gridsize_x, gridsize_y, 1);
         dim3 blocksize(32, 32, 1);
         calc_tile_info_kernel2<<<gridsize, blocksize>>>(
-            gaussians_image_space.pos.data_ptr<float>(), 
-            gaussians_image_space.cov.data_ptr<float>(), 
-            tile_info.top.data_ptr<float>(), 
-            tile_info.bottom.data_ptr<float>(), 
-            tile_info.left.data_ptr<float>(), 
-            tile_info.right.data_ptr<float>(), 
+            gaussians_image_space.pos.data_ptr<float>(),
+            gaussians_image_space.cov.data_ptr<float>(),
+            tile_info.top.data_ptr<float>(),
+            tile_info.bottom.data_ptr<float>(),
+            tile_info.left.data_ptr<float>(),
+            tile_info.right.data_ptr<float>(),
             tile_n_point.data_ptr<int>(),
             tile_gaussian_list.data_ptr<int>(),
-            n_point, 
+            n_point,
             n_tiles,
             max_points_per_tile,
             thresh
@@ -317,13 +317,13 @@ void calc_tile_list(
         dim3 gridsize(gridsize_x, 1, 1);
         dim3 blocksize(1024, 1, 1);
         calc_tile_info_kernel3<<<gridsize, blocksize>>>(
-            gaussians_image_space.pos.data_ptr<float>(), 
-            gaussians_image_space.cov.data_ptr<float>(), 
+            gaussians_image_space.pos.data_ptr<float>(),
+            gaussians_image_space.cov.data_ptr<float>(),
             tile_length_x,
             tile_length_y,
             tile_n_point.data_ptr<int>(),
             tile_gaussian_list.data_ptr<int>(),
-            n_point, 
+            n_point,
             n_tiles_x,
             n_tiles_y,
             max_points_per_tile,
@@ -357,10 +357,10 @@ __global__ void gather_gaussians_kernel(
 }
 
 void gather_gaussians(
-    torch::Tensor tile_n_point_accum, 
-    torch::Tensor tile_gaussian_list, 
-    torch::Tensor gathered_list, 
-    torch::Tensor tile_ids_for_points, 
+    torch::Tensor tile_n_point_accum,
+    torch::Tensor tile_gaussian_list,
+    torch::Tensor gathered_list,
+    torch::Tensor tile_ids_for_points,
     int max_points_for_tile
 ){
     uint32_t n_tiles = tile_n_point_accum.size(0) - 1;
@@ -443,14 +443,14 @@ __global__ void draw_backward_kernel(
     const float * gaussian_rgb_coeff,
     const float * gaussian_opa,
     const float * gaussian_cov,
-    const int * tile_n_point_accum, 
+    const int * tile_n_point_accum,
     const float * output,
     const float * grad_output,
-    float * grad_pos, 
+    float * grad_pos,
     float * grad_rgb_coeff,
     float * grad_opa,
     float * grad_cov,
-    const float focal_x, 
+    const float focal_x,
     const float focal_y,
     const uint32_t w,
     const uint32_t h,
@@ -471,7 +471,7 @@ __global__ void draw_backward_kernel(
     uint32_t start_idx = tile_n_point_accum[id_tile];
     uint32_t end_idx = tile_n_point_accum[id_tile+1];
     // const uint32_t interval_length = end_idx - start_idx;
-   
+
     uint32_t id_thread = threadIdx.x + threadIdx.y * blockDim.x;
     uint32_t blocksize = blockDim.x * blockDim.y;
 
@@ -535,7 +535,7 @@ __global__ void draw_backward_kernel(
     // load to memory
     uint32_t n_loadings = DIV_ROUND_UP(end_idx - start_idx, SMSIZE);
     uint32_t global_idx;
-    
+
     //output gradient
     output += (id_x + id_y * w) * 3;
     grad_output += (id_x + id_y * w) * 3;
@@ -570,7 +570,7 @@ __global__ void draw_backward_kernel(
             _gaussian_cov[i*4 + 3] = gaussian_cov[(start_idx + i_loadings*SMSIZE + i)*4 + 3];
         }
         __syncthreads();
-        
+
         for(uint32_t i=0; i<SMSIZE; ++i){
             global_idx = i_loadings*SMSIZE + i;
 
@@ -632,7 +632,7 @@ __global__ void draw_backward_kernel(
             // gradient w.r.t position (not _x, _y, with a minus)
             T dP_dx = current_prob / Pn * (2*_d*_x - _b*_y - _c*_y);
             T dP_dy = current_prob / Pn * (2*_a*_y - _b*_x - _c*_x);
-            
+
             weight = alpha * accum;
 
             float cur_point_color[] = {0.0, 0.0, 0.0};
@@ -805,14 +805,15 @@ __global__ void draw_backward_kernel(
 
 template<uint32_t SMSIZE, typename T, uint32_t D>
 __global__ void draw_kernel(
-    // Gaussian3ds & tile_sorted_gaussians, 
+    // Gaussian3ds & tile_sorted_gaussians,
     const float * gaussian_pos,
     const float * gaussian_rgb_coeff,
     const float * gaussian_opa,
     const float * gaussian_cov,
-    const int * tile_n_point_accum, 
-    float * res, 
-    const float focal_x, 
+    const float * background_color,
+    const int * tile_n_point_accum,
+    float * res,
+    const float focal_x,
     const float focal_y,
     const uint32_t w,
     const uint32_t h,
@@ -898,7 +899,7 @@ __global__ void draw_kernel(
             _gaussian_cov[i*4 + 3] = gaussian_cov[(start_idx + i_loadings*SMSIZE + i)*4 + 3];
         }
         __syncthreads();
-        
+
         for(uint32_t i=0; i<SMSIZE; ++i){
             global_idx = i_loadings*SMSIZE + i;
 
@@ -961,23 +962,29 @@ __global__ void draw_kernel(
         }
     }
 
-    if(accum_weight < 0.01 || !weight_normalize){
-        accum_weight = 1;
+    if(weight_normalize){
+        res[(id_x + id_y * w)*3 + 0] = color[0]/accum_weight;
+        res[(id_x + id_y * w)*3 + 1] = color[1]/accum_weight;
+        res[(id_x + id_y * w)*3 + 2] = color[2]/accum_weight;
     }
-    res[(id_x + id_y * w)*3 + 0] = color[0] / accum_weight;
-    res[(id_x + id_y * w)*3 + 1] = color[1] / accum_weight;
-    res[(id_x + id_y * w)*3 + 2] = color[2] / accum_weight;
+    else{
+        float bg_weight = 1-accum_weight;
+        res[(id_x + id_y * w)*3 + 0] = color[0] + bg_weight * background_color[0];
+        res[(id_x + id_y * w)*3 + 1] = color[1] + bg_weight * background_color[1];
+        res[(id_x + id_y * w)*3 + 2] = color[2] + bg_weight * background_color[2];
+    }
 }
 
 // void draw(Gaussian3ds & tile_sorted_gaussians, torch::Tensor tile_n_point_accum, torch::Tensor res, float focal_x, float focal_y){
 void draw(
-    torch::Tensor gaussian_pos, 
-    torch::Tensor gaussian_rgb, 
-    torch::Tensor gaussian_opa, 
-    torch::Tensor gaussian_cov, 
-    torch::Tensor tile_n_point_accum, 
-    torch::Tensor res, 
-    float focal_x, 
+    torch::Tensor gaussian_pos,
+    torch::Tensor gaussian_rgb,
+    torch::Tensor gaussian_opa,
+    torch::Tensor gaussian_cov,
+    torch::Tensor background_color,
+    torch::Tensor tile_n_point_accum,
+    torch::Tensor res,
+    float focal_x,
     float focal_y,
     bool weight_normalize,
     bool sigmoid,
@@ -989,7 +996,7 @@ void draw(
     bool use_sh_coeff
 ){
     uint32_t h = res.size(0);
-    uint32_t w = res.size(1); 
+    uint32_t w = res.size(1);
     uint32_t gridsize_x = DIV_ROUND_UP(w, 16);
     uint32_t gridsize_y = DIV_ROUND_UP(h, 16);
     dim3 gridsize(gridsize_x, gridsize_y, 1);
@@ -1002,6 +1009,7 @@ void draw(
             gaussian_rgb.data_ptr<float>(),
             gaussian_opa.data_ptr<float>(),
             gaussian_cov.data_ptr<float>(),
+            background_color.data_ptr<float>(),
             tile_n_point_accum.data_ptr<int>(),
             res.data_ptr<float>(),
             focal_x,
@@ -1024,6 +1032,7 @@ void draw(
             gaussian_rgb.data_ptr<float>(),
             gaussian_opa.data_ptr<float>(),
             gaussian_cov.data_ptr<float>(),
+            background_color.data_ptr<float>(),
             tile_n_point_accum.data_ptr<int>(),
             res.data_ptr<float>(),
             focal_x,
@@ -1043,18 +1052,18 @@ void draw(
 }
 
 void draw_backward(
-    torch::Tensor gaussian_pos, 
-    torch::Tensor gaussian_rgb, 
-    torch::Tensor gaussian_opa, 
-    torch::Tensor gaussian_cov, 
-    torch::Tensor tile_n_point_accum, 
-    torch::Tensor output, 
+    torch::Tensor gaussian_pos,
+    torch::Tensor gaussian_rgb,
+    torch::Tensor gaussian_opa,
+    torch::Tensor gaussian_cov,
+    torch::Tensor tile_n_point_accum,
+    torch::Tensor output,
     torch::Tensor grad_output,
     torch::Tensor grad_pos,
     torch::Tensor grad_rgb,
     torch::Tensor grad_opa,
     torch::Tensor grad_cov,
-    float focal_x, 
+    float focal_x,
     float focal_y,
     bool weight_normalize,
     bool sigmoid,
@@ -1066,7 +1075,7 @@ void draw_backward(
     bool use_sh_coeff
 ){
     uint32_t h = output.size(0);
-    uint32_t w = output.size(1); 
+    uint32_t w = output.size(1);
     uint32_t gridsize_x = DIV_ROUND_UP(w, 16);
     uint32_t gridsize_y = DIV_ROUND_UP(h, 16);
     dim3 gridsize(gridsize_x, gridsize_y, 1);
@@ -1125,7 +1134,7 @@ void draw_backward(
             use_sh_coeff
         );
     }
-    
+
 }
 
 __device__ void world_to_camera(
@@ -1173,7 +1182,7 @@ __device__ void calc_jacobian(
     _res[7] = _rsqr * u1;
     _res[8] = _rsqr * u2;
 
-    #pragma unroll 
+    #pragma unroll
     for(uint32_t i=0; i<9; ++i){
         jacobian[i] = _res[i];
     }
@@ -1281,8 +1290,8 @@ __global__ void global_culling_kernel(
             }
         }
     }
-    
-    
+
+
 
     float jacobian[9];
     calc_jacobian(pos_c, jacobian);
@@ -1336,16 +1345,16 @@ __global__ void global_culling_kernel(
 }
 
 void global_culling(
-    torch::Tensor pos, 
-    torch::Tensor quat, 
-    torch::Tensor scale, 
-    torch::Tensor current_rot, 
-    torch::Tensor current_tran, 
+    torch::Tensor pos,
+    torch::Tensor quat,
+    torch::Tensor scale,
+    torch::Tensor current_rot,
+    torch::Tensor current_tran,
     torch::Tensor res_pos,
     torch::Tensor res_cov,
     torch::Tensor culling_mask,
-    float near, 
-    float half_width, 
+    float near,
+    float half_width,
     float half_height
 ){
     uint32_t n_point = pos.size(0);
@@ -1389,7 +1398,7 @@ __global__ void global_culling_backward_kernel(
     if(culling_mask[pid]==0){
         return;
     }
-    
+
     // forward pass pos 0,1,2 -> pos_c 0,1,2 -> pos_i 0,1,2
     float pos_c[3];
     world_to_camera(pos, current_rot, current_tran, pos_c);
@@ -1559,7 +1568,7 @@ __global__ void global_culling_backward_kernel(
 
     #pragma unroll
     for(uint32_t i=0; i<9; ++i){
-        grad_qr += gradcoeff_qr[i] * grad_RS[i]; 
+        grad_qr += gradcoeff_qr[i] * grad_RS[i];
         grad_qi += gradcoeff_qi[i] * grad_RS[i];
         grad_qj += gradcoeff_qj[i] * grad_RS[i];
         grad_qk += gradcoeff_qk[i] * grad_RS[i];
@@ -1569,23 +1578,23 @@ __global__ void global_culling_backward_kernel(
     gradinput_quat[pid*4+1] = grad_qi;
     gradinput_quat[pid*4+2] = grad_qj;
     gradinput_quat[pid*4+3] = grad_qk;
-    
+
     gradinput_scale[pid*3+0] = grad_scale[0];
     gradinput_scale[pid*3+1] = grad_scale[1];
     gradinput_scale[pid*3+2] = grad_scale[2];
 }
 
 void global_culling_backward(
-    torch::Tensor pos, 
-    torch::Tensor quat, 
-    torch::Tensor scale, 
-    torch::Tensor current_rot, 
-    torch::Tensor current_tran, 
-    torch::Tensor gradout_pos, 
-    torch::Tensor gradout_cov, 
-    torch::Tensor culling_mask, 
-    torch::Tensor gradinput_pos, 
-    torch::Tensor gradinput_quat, 
+    torch::Tensor pos,
+    torch::Tensor quat,
+    torch::Tensor scale,
+    torch::Tensor current_rot,
+    torch::Tensor current_tran,
+    torch::Tensor gradout_pos,
+    torch::Tensor gradout_cov,
+    torch::Tensor culling_mask,
+    torch::Tensor gradinput_pos,
+    torch::Tensor gradinput_quat,
     torch::Tensor gradinput_scale
 ){
     uint32_t n_point = pos.size(0);

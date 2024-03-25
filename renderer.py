@@ -6,11 +6,12 @@ from torch.autograd.function import once_differentiable
 class _Drawer(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx, 
+        ctx,
         gaussians_pos,
         gaussians_rgb,
         gaussians_opa,
         gaussians_cov,
+        background_color,
         tile_n_point_accum,
         padded_height,
         padded_width,
@@ -31,6 +32,7 @@ class _Drawer(torch.autograd.Function):
             gaussians_rgb,
             gaussians_opa,
             gaussians_cov,
+            background_color,
             tile_n_point_accum,
             rendered_image,
             focal_x,
@@ -52,7 +54,7 @@ class _Drawer(torch.autograd.Function):
         ctx.fast = fast
         ctx.use_sh_coeff = use_sh_coeff
         return rendered_image
-    
+
     @staticmethod
     def backward(ctx, grad_output):
         # grad_output
@@ -84,7 +86,7 @@ class _Drawer(torch.autograd.Function):
             vec_dy,
             ctx.use_sh_coeff,
         )
-        return grad_pos, grad_rgb, grad_opa, grad_cov, None, None, None, None, None, None, None, None, None, None, None, None, None
+        return grad_pos, grad_rgb, grad_opa, grad_cov, None, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 draw = _Drawer.apply
 
@@ -145,16 +147,16 @@ class _GlobalCulling(torch.autograd.Function):
         gradinput_scale = torch.zeros((gradout_pos.shape[0], 3), device=gradout_pos.device)
         gaussian.global_culling_backward(
             pos, quat, scale, current_rot, current_tran,
-            gradout_pos, 
-            gradout_cov, 
+            gradout_pos,
+            gradout_cov,
             culling_mask,
-            gradinput_pos, 
-            gradinput_quat, 
-            gradinput_scale, 
+            gradinput_pos,
+            gradinput_quat,
+            gradinput_scale,
         )
 
         return gradinput_pos, gradinput_quat, gradinput_scale, None, None, None, None, None
-    
+
 global_culling = _GlobalCulling.apply
 
 
