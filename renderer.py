@@ -25,6 +25,8 @@ class _Drawer(torch.autograd.Function):
         vec_dx=None,
         vec_dy=None
     ):
+        # No Effect when use SRN dataset need to render white background
+        # rendered_image = torch.ones(padded_height, padded_width, 3, device=gaussians_pos.device, dtype=torch.float32)
         rendered_image = torch.zeros(padded_height, padded_width, 3, device=gaussians_pos.device, dtype=torch.float32)
         gaussian.draw(
             gaussians_pos,
