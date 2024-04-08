@@ -53,11 +53,11 @@ class ViserViewer:
             wxyz=(1.0, 0.0, 0.0, 0.0),
             position=(0, 0, 0),
         )
-        self.server.add_frame(
-            "/other",
-            wxyz=(-0.22699525,  0.39316731, -0.77163428,  0.44550326),
-            position=(-0.70062927,  0.50903696,  0.5),
-        )
+        # self.server.add_frame(
+        #     "/cam0",
+        #     wxyz=(1, 0, 0, 0),
+        #     position=(-1.1728e+01,  -1.0614e+00, -3.7285e+00),
+        # )
 
         self.sh_order = self.server.add_gui_slider(
             "SH Order", min=1, max=4, step=1, initial_value=1

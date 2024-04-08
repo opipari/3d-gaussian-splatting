@@ -201,6 +201,7 @@ class Trainer:
         }
 
     def train(self):
+
         bar = tqdm(range(0, opt.n_iters))
         for i_iter in bar:
             output = self.train_step(i_iter, bar)
@@ -226,7 +227,7 @@ class Trainer:
                 os.makedirs(dirpath, exist_ok=True)
                 cv2.imwrite(f"{opt.exp}/imgs/train_{i_iter}.png", (img_npy*255).astype(np.uint8)[...,::-1])
                 self.save_checkpoint()
-
+            
             if i_iter % 100 == 0:
                 Timer.show_recorder()
 
@@ -367,8 +368,10 @@ if __name__ == "__main__":
     else:
         jacobian_calc="cuda"
     data_path = os.path.join(opt.data, 'sparse', '0')
-    img_path = os.path.join(opt.data, f'images_{opt.render_downsample_start}')
+    # img_path = os.path.join(opt.data, f'images_{opt.render_downsample_start}')
+    img_path = '/home/topipari/Desktop/FastSPAM/video_segmentation/datasets/MVPd/MVPd/test/imagesRGB/'
 
+    
     if opt.ckpt == "":
         opt.ckpt = None
     gaussian_splatter = Splatter(
